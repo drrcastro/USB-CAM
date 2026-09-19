@@ -58,6 +58,9 @@ dependencies {
     // Material icons extended for camera swap icon
     implementation("androidx.compose.material:material-icons-extended:1.7.3")
 
+    // UVC Camera Library (v3)
+    implementation("com.github.jiangdongguo.AndroidUSBCamera:libausbc:3.2.7")
+
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
