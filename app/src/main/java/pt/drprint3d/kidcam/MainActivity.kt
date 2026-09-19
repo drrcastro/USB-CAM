@@ -16,6 +16,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.*
+import androidx.camera.camera2.interop.Camera2CameraInfo
+import android.hardware.camera2.CameraCharacteristics
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Image
@@ -25,7 +27,6 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -36,8 +37,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -147,6 +150,28 @@ fun CameraView(isPipMode: Boolean) {
     var scale by remember { mutableStateOf(1f) }
     var offsetX by remember { mutableStateOf(0f) }
     var offsetY by remember { mutableStateOf(0f) }
+    var boxSize by remember { mutableStateOf(IntSize.Zero) }
+    var cameraAspect by remember { mutableStateOf(16f / 9f) }
+    var isInitialScaleSet by remember { mutableStateOf(false) }
+
+    LaunchedEffect(boxSize, cameraAspect) {
+        if (!isInitialScaleSet && boxSize.width > 0 && boxSize.height > 0) {
+            val boxAspect = boxSize.width.toFloat() / boxSize.height.toFloat()
+            val fillScale = if (boxAspect > cameraAspect) boxAspect / cameraAspect else cameraAspect / boxAspect
+            scale = max(1f, fillScale)
+            isInitialScaleSet = true
+        }
+    }
+
+    LaunchedEffect(isPipMode) {
+        if (isPipMode) {
+            val boxAspect = if (boxSize.height > 0) boxSize.width.toFloat() / boxSize.height.toFloat() else 1f
+            val fillScale = if (boxAspect > cameraAspect) boxAspect / cameraAspect else cameraAspect / boxAspect
+            scale = max(1f, fillScale)
+            offsetX = 0f
+            offsetY = 0f
+        }
+    }
 
     // Preferences state
     val mirrorXState = cameraPreferences.mirrorX.collectAsState(initial = false)
@@ -357,19 +382,39 @@ fun CameraView(isPipMode: Boolean) {
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black)
-                .pointerInput(Unit) {
+                .onSizeChanged { size ->
+                    boxSize = size
+                }
+                .pointerInput(boxSize) {
                     detectTransformGestures { _, pan, zoom, _ ->
                         scale = max(1f, scale * zoom)
+
+                        val videoAspect = cameraAspect
+                        val boxAspect = if (boxSize.height > 0) boxSize.width.toFloat() / boxSize.height.toFloat() else 1f
+
+                        val videoWidth: Float
+                        val videoHeight: Float
+                        if (boxAspect > videoAspect) {
+                            videoHeight = boxSize.height.toFloat()
+                            videoWidth = videoHeight * videoAspect
+                        } else {
+                            videoWidth = boxSize.width.toFloat()
+                            videoHeight = videoWidth / videoAspect
+                        }
+
+                        val scaledVideoWidth = videoWidth * scale
+                        val scaledVideoHeight = videoHeight * scale
+
+                        val maxOffsetX = max(0f, (scaledVideoWidth - boxSize.width) / 2f)
+                        val maxOffsetY = max(0f, (scaledVideoHeight - boxSize.height) / 2f)
+
                         if (scale == 1f) {
                             offsetX = 0f
                             offsetY = 0f
                         } else {
-                            offsetX += pan.x
-                            offsetY += pan.y
+                            offsetX = (offsetX + pan.x).coerceIn(-maxOffsetX, maxOffsetX)
+                            offsetY = (offsetY + pan.y).coerceIn(-maxOffsetY, maxOffsetY)
                         }
-                        try {
-                            cameraControl?.setZoomRatio(scale)
-                        } catch (_: Exception) {}
                     }
                 }
         ) {
@@ -379,7 +424,8 @@ fun CameraView(isPipMode: Boolean) {
             AndroidView(
                 factory = { ctx ->
                     PreviewView(ctx).apply {
-                        this.scaleType = PreviewView.ScaleType.FILL_CENTER
+                        this.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                        this.scaleType = PreviewView.ScaleType.FIT_CENTER
                         layoutParams = ViewGroup.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.MATCH_PARENT
@@ -409,13 +455,24 @@ fun CameraView(isPipMode: Boolean) {
                         )
 
                         cameraControl = camera.cameraControl
+
+                        try {
+                            val camera2Info = Camera2CameraInfo.from(camera.cameraInfo)
+                            val activeArray = camera2Info.getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+                            if (activeArray != null) {
+                                val w = activeArray.width().toFloat()
+                                val h = activeArray.height().toFloat()
+                                val rotation = camera.cameraInfo.sensorRotationDegrees
+                                cameraAspect = if (rotation == 90 || rotation == 270) h / w else w / h
+                            }
+                        } catch (_: Exception) {}
                     } catch (exc: Exception) {
                         exc.printStackTrace()
                     }
                 }
             )
 
-            // Hamburger menu button (top-left) & Camera switch button (bottom-end)
+            // Hamburger menu button (top-left)
             if (!isPipMode) {
                 IconButton(
                     onClick = {
@@ -434,32 +491,6 @@ fun CameraView(isPipMode: Boolean) {
                         contentDescription = "Menu",
                         tint = Color.White
                     )
-                }
-
-                if (cameraSelectors.size > 1) {
-                    IconButton(
-                        onClick = {
-                            currentSelectorIndex = (currentSelectorIndex + 1) % cameraSelectors.size
-                            coroutineScope.launch {
-                                cameraPreferences.saveLastUsedCameraId(currentSelectorIndex.toString())
-                            }
-                            scale = 1f
-                            offsetX = 0f
-                            offsetY = 0f
-                        },
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(32.dp)
-                            .size(64.dp)
-                            .background(Color.Black.copy(alpha = 0.5f), shape = MaterialTheme.shapes.extraLarge)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Cameraswitch,
-                            contentDescription = "Switch Camera",
-                            tint = Color.White,
-                            modifier = Modifier.size(32.dp)
-                        )
-                    }
                 }
             }
         }
