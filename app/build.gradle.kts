@@ -61,6 +61,9 @@ dependencies {
     // UVC Camera Library (v3)
     implementation("com.github.jiangdongguo.AndroidUSBCamera:libausbc:3.2.7")
 
+    // ZXing for QR Code generation
+    implementation("com.google.zxing:core:3.5.4")
+
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
